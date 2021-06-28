@@ -15,9 +15,11 @@ host_dict = {
 
 distributed_monitor = DistributedMonitor(hosts=host_dict)
 
+time.sleep(10)
 distributed_monitor.begin_synchronized()
 print('x = 2')
 time.sleep(1)
+distributed_monitor.signal()
 distributed_monitor.end_synchronized()
 # while True:
 #     pass

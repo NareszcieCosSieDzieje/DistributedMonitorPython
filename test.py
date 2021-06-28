@@ -24,9 +24,10 @@ host_dict = {
 distributed_monitor = DistributedMonitor(hosts=host_dict)
 
 distributed_monitor.begin_synchronized()
-print('blocking from 1')
 distributed_monitor.block()
 print('x = 1')
+distributed_monitor.block()
+print('y = 11')
 time.sleep(2)
 distributed_monitor.end_synchronized()
 

@@ -10,7 +10,7 @@ from queue import PriorityQueue, Queue
 # sys.path.append(".\protobuf")
 
 from hanging_threads import start_monitoring
-start_monitoring(seconds_frozen=25, test_interval=100)
+start_monitoring(seconds_frozen=40, test_interval=100)
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -110,8 +110,8 @@ class DistributedMonitor:
         self._hosts_replies_lock = threading.Condition()
 
         self._critical_section_queue = PriorityQueue(maxsize=number_of_other_hosts+1)
-        self._sleep_map = dict()
-        self._sleep_map_lock = threading.Condition()
+        self._sleep_set = set()
+        self._sleep_set_lock = threading.Condition()
 
         # self.shared_variables = {}
         # COULD EXTEND THE FUNCTIONALITY OF THE MODULE BY PROVIDING A WAY OF SYNCHRONIZING VARIABLES
@@ -185,7 +185,7 @@ class DistributedMonitor:
             available_sockets = dict(self._poller.poll(1000))  # 1000  WAIT 1000ms == 1s
             if self.subscriber_socket in available_sockets and available_sockets[self.subscriber_socket] == zmq.POLLIN:
                 try:
-                    self._receive()
+                self._receive()
                 except Exception as e:
                     logging.warning(f'Error while receiving {e}')
             with self._subscriber_loop_lock:
@@ -272,6 +272,7 @@ class DistributedMonitor:
             if sender_id in self._hosts_replies:
                 self._hosts_replies[sender_id] = True
                 if all(self._hosts_replies.values()):
+                    # FIXME NIE WIDZI ZE SIEBIE WBIL DO SEKCJI??
                     if self.host_id == self._critical_section_queue.queue[0][1]:
                         with self._in_critical_section_lock:
                             self._in_critical_section = True
@@ -368,22 +369,12 @@ class DistributedMonitor:
 
     def _handle_sleep_msg(self, sender_id: int):
         logging.debug(f'Host[{self.host_id}] handling (SLEEP) from host[{sender_id}].')
-        (used_sender_clock, used_sender_id) = self._critical_section_queue.get()
-        with self._sleep_map_lock:
-            self._sleep_map[sender_id] = used_sender_clock
-        if len(self._critical_section_queue.queue) > 0:
-            if self.host_id == self._critical_section_queue.queue[0][1]:
-                with self._in_critical_section_lock:
-                    self._in_critical_section = True
-                    logging.debug(f'Host[{self.host_id}] entered the critical section via sleep msg.')
-                    self._in_critical_section_lock.notifyAll()  # FIXME: !!!!!1 JAKIE TU MA BYC I CZY W KONTEKSCIE CZY NIE
-        if used_sender_id != sender_id:
-            logging.critical(f'Host[{self.host_id}] handle_sleep error -> {used_sender_id} != {sender_id}')
+        with self._sleep_set_lock:
+            self._sleep_set.add(sender_id)
 
     def _handle_wake_msg(self, receiver_id: int):  # TUTAJ KOLEJNOSC JAKA WYSCIG Z RELEASE
-        with self._sleep_map_lock:
-            used_sender_clock = self._sleep_map.pop(receiver_id, 0)
-        self._critical_section_queue.put((used_sender_clock, receiver_id))
+        with self._sleep_set_lock:
+            self._sleep_set.remove(receiver_id)
         if receiver_id == self.host_id:
             with self._asleep_lock:
                 self._asleep = False
@@ -420,6 +411,18 @@ class DistributedMonitor:
                 logging.info(f'Host[{self.host_id}] does no have the critical section. Cannot exit a monitor without entering it.')
         logging.debug(f'Host[{self.host_id}] exited monitor.')
 
+    def _send_signal(self):
+        # WAKES UP A HOST BUT ONLY AFTER SENDING RELEASE
+        with self._sleep_set_lock:
+            if len(self._sleep_set) != 0:
+                # DONT SEND WAKE UP SIGNAL TO YOURSELF
+                host_id_to_wakeup = random.choice(list(self._sleep_set.intersection(set(self.other_host_ids))))
+                self._sleep_set.remove(host_id_to_wakeup)
+                self._send(MessageTypes.WAKE, host_id_to_wakeup)  # TODO: CZY TO MA BYC W LOCKU!!!??
+                logging.debug(f'Host[{self.host_id}] sent a wake-up signal to host[{host_id_to_wakeup}].')
+            else:
+                logging.debug(f'Host[{self.host_id}]\'s sleep queue is empty. No signaling has been done.')
+
     def signal(self):
         with self._in_critical_section_lock:
             if self._in_critical_section:
@@ -428,61 +431,39 @@ class DistributedMonitor:
             else:
                 logging.debug(f'Host[{self.host_id}] not in critical section. No signaling has been done.')
 
-    def _send_signal(self):
-        # WAKES UP A HOST BUT ONLY AFTER SENDING RELEASE
-        with self._sleep_map_lock:
-            if len(self._sleep_map) != 0:
-                host_id_to_wakeup = random.choice(list(self._sleep_map.keys()))
-                self._sleep_map.pop(host_id_to_wakeup, 0)
-                self._send(MessageTypes.WAKE, host_id_to_wakeup)  # TODO: CZY TO MA BYC W LOCKU!!!??
-                logging.debug(f'Host[{self.host_id}] sent a wake-up signal to host[{host_id_to_wakeup}].')
-            else:
-                logging.debug(f'Host[{self.host_id}]\'s sleep queue is empty. No signaling has been done.')
-
     def signal_all(self):  # FIXME TUTAJ BY SIE DZIALA BITKA O SEKCJE!!
         with self._in_critical_section_lock:
             if self._in_critical_section:
                 with self._should_signal_lock:
                     # TODO LOCK NA LICZBE HOSTOW??
-                    with self._sleep_map_lock:
-                        self._should_signal = len(self._sleep_map) #len(self.other_host_ids)
-                    # NA WSYZSTKICH SPIACYCH
+                    with self._sleep_set_lock:
+                        self._should_signal = len(self._sleep_set.intersection(set(self.other_host_ids))) #len(self.other_host_ids)
+                    # NA WSZYSTKICH SPIACYCH
             else:
                 logging.debug(f'Host[{self.host_id}] not in critical section. No signaling has been done.')
-
-    # def _send_signal_all(self):
-    #     with self._in_critical_section_lock:
-    #         if self._in_critical_section:
-    #             with self._sleep_map_lock:
-    #                 if len(self._sleep_map) != 0:
-    #                     for host_id_to_wakeup in self._sleep_map:
-    #                         self._send(MessageTypes.WAKE, host_id_to_wakeup)  # TODO: CZY TO MA BYC W LOCKU!!!??
-    #                     logging.debug(f'Host[{self.host_id}] sent wake-up signals to hosts[{self._sleep_map.keys()}].')
-    #                     self._sleep_map = {}
-    #                 else:
-    #                     logging.debug(f'Host[{self.host_id}]\'s sleep queue is empty. No signaling has been done.')
-    #         else:
-    #             logging.debug(f'Host[{self.host_id}] not in critical section. No signaling has been done.')
 
     def block(self):
         should_sleep = False
         with self._in_critical_section_lock:
             if self._in_critical_section:
-                self._in_critical_section = False
                 should_sleep = True
         if should_sleep:
             logging.debug(f'Host[{self.host_id}] RUNNING -> BLOCKING.')
-            # REMOVE SELF FROM CS
-            (used_sender_clock, used_sender_id) = self._critical_section_queue.get()
-            with self._sleep_map_lock:
-                self._sleep_map[self.host_id] = used_sender_clock
-            # SET SLEEP LOCK
+            # ADD TO SLEEP SET
+            with self._sleep_set_lock:
+                self._sleep_set.add(self.host_id)
+            # SET SLEEP LOCKs
             with self._release_cond_lock:
                 self._release_cond = True
             with self._asleep_lock:
                 self._asleep = True
             # SEND SLEEP MSG
             self._broadcast(MessageTypes.SLEEP)
+            # RELEASE CS
+            with self._in_critical_section_lock:
+                if self._in_critical_section:
+                    self._in_critical_section = False
+                    self._release()
             # BLOCK UNTIL RELEASE
             with self._release_cond_lock:
                 while self._release_cond:
@@ -491,10 +472,10 @@ class DistributedMonitor:
             with self._asleep_lock:
                 while self._asleep:
                     self._asleep_lock.wait()
-            # PUT BACK TO CS
-            # self._critical_section_queue.put((used_sender_clock, used_sender_id)) # CZY TO SIE NIE GRYZIE Z JAKIMS HANDLEM  GRYZIE SIE I JEST DWA RAZY!!!!!!!!!!!!!11 FIXME
+            self._request()
             with self._in_critical_section_lock:
-                self._in_critical_section = True
+                while not self._in_critical_section:
+                    self._in_critical_section_lock.wait()
         logging.debug(f'Host[{self.host_id}] BLOCKING -> RUNNING.')
 
     def stop_monitor(self):
