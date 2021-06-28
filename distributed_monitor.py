@@ -185,7 +185,7 @@ class DistributedMonitor:
             available_sockets = dict(self._poller.poll(1000))  # 1000  WAIT 1000ms == 1s
             if self.subscriber_socket in available_sockets and available_sockets[self.subscriber_socket] == zmq.POLLIN:
                 try:
-                self._receive()
+                    self._receive()
                 except Exception as e:
                     logging.warning(f'Error while receiving {e}')
             with self._subscriber_loop_lock:
