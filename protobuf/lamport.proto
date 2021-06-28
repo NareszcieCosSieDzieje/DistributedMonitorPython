@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package com.npr;
+
+message Lamport {
+
+  MessageType message_type = 1;
+  int64 clock = 2;
+  int32 id_sender = 3;
+  int32 id_receiver = 4;
+
+  enum MessageType {
+    REQUEST_INITIAL = 0;
+    REPLY_INITIAL = 1;
+    RELEASE_INITIAL = 2;
+    REQUEST = 3;
+    REPLY = 4;
+    RELEASE = 5;
+    SLEEP = 6;
+    WAKE = 7;
+    END_COMMUNICATION = 8;
+  }
+
+}
