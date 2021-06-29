@@ -11,8 +11,8 @@ from queue import PriorityQueue, Queue
 
 
 # DEBUG
-from hanging_threads import start_monitoring
-start_monitoring(seconds_frozen=40, test_interval=100)
+# from hanging_threads import start_monitoring
+# start_monitoring(seconds_frozen=40, test_interval=100)
 
 logging.basicConfig(level=logging.DEBUG)
 
