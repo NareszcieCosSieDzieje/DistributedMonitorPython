@@ -14,7 +14,7 @@ host_dict = {
 
 
 distributed_monitor = DistributedMonitor(hosts=host_dict)
-
+distributed_monitor.stop_monitor()
 time.sleep(10)
 distributed_monitor.begin_synchronized()
 print('x = 2')
@@ -24,7 +24,7 @@ distributed_monitor.end_synchronized()
 # while True:
 #     pass
 print('sleep')
-time.sleep(120)
+# time.sleep(120)
 
 
 print('end 2')

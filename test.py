@@ -24,9 +24,7 @@ host_dict = {
 distributed_monitor = DistributedMonitor(hosts=host_dict)
 
 distributed_monitor.begin_synchronized()
-distributed_monitor.block()
 print('x = 1')
-distributed_monitor.block()
 print('y = 11')
 time.sleep(2)
 distributed_monitor.end_synchronized()
@@ -35,7 +33,7 @@ distributed_monitor.end_synchronized()
 #     pass
 # OBSLUZ KILKA NA RAZ ITP
 print('sleep')
-time.sleep(120)
+# time.sleep(120)
 
 
 print('end 1')

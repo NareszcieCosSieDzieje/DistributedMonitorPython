@@ -9,6 +9,8 @@ from queue import PriorityQueue, Queue
 
 # sys.path.append(".\protobuf")
 
+
+# DEBUG
 from hanging_threads import start_monitoring
 start_monitoring(seconds_frozen=40, test_interval=100)
 
@@ -23,7 +25,7 @@ class HostsDictError(Exception):
     def __str__(self):
         return repr(self.value)
 
-# TODO: CO Z REENTRANCY
+
 class DistributedMonitor:
 
     max_id = 0
@@ -46,6 +48,7 @@ class DistributedMonitor:
         self._lamport_lock = threading.Condition()
 
         self._synchronization_phase = True
+        self.__synchronization_loop = True
         self._synchronization_phase_lock = threading.Condition()
 
         self._in_critical_section = False
@@ -56,6 +59,9 @@ class DistributedMonitor:
 
         self._release_cond = False
         self._release_cond_lock = threading.Condition()
+
+        self._instance_dead = False
+        self._instance_dead_lock = threading.Condition()
 
         if 'main' not in hosts:
             logging.info(f'Host cannot be initialized. The key \'main\' is missing from the input \'hosts\' dictionary.\nExiting.')
@@ -83,6 +89,7 @@ class DistributedMonitor:
         # HOSTS IDENTIFIED BY UNIQUE PORT NUMBERS
         self.host_id = hosts['main']['port']
         self.other_host_ids = [other_host['port'] for other_host in hosts['other']]
+        self._other_host_ids_lock = threading.Condition()
 
         number_of_other_hosts = len(hosts['other'])
 
@@ -150,24 +157,30 @@ class DistributedMonitor:
             3. RELEASE_INITIAL
         """
         # REQ -> PHASE ONE
-        while True:
-            for destination_host in self.other_host_ids:
-                self._send(MessageTypes.REQUEST_INITIAL, destination_host)
+        synchronization_loop = True
+        while synchronization_loop:
+            with self._other_host_ids_lock:
+                for destination_host in self.other_host_ids:
+                    self._send(MessageTypes.REQUEST_INITIAL, destination_host)
             logging.debug('Sent 1. REQUEST_INITIAL.')
             with self._hosts_acks_lock:
-                if all(map(lambda x: True if x > 0 else False, self._hosts_acks.values())):
+                if len(self._hosts_acks) > 0 and all(map(lambda x: True if x > 0 else False, self._hosts_acks.values())):
                     # REP -> PHASE TWO
                     logging.debug('Sent 2. REPLY_INITIAL.')
-                    for destination_host in self.other_host_ids:
-                        self._send(MessageTypes.REPLY_INITIAL, destination_host)
+                    with self._other_host_ids_lock:
+                        for destination_host in self.other_host_ids:
+                            self._send(MessageTypes.REPLY_INITIAL, destination_host)
             with self._hosts_acks_lock:
-                if all(map(lambda x: True if x == 2 else False, self._hosts_acks.values())):
+                if len(self._hosts_acks) > 0 and all(map(lambda x: True if x == 2 else False, self._hosts_acks.values())):
                     break
+            with self._synchronization_phase_lock:
+                self._synchronization_loop = False
             time.sleep(1)  # TODO: OBCZAJ
         # REL -> PHASE THREE
         logging.debug('Sent 3. RELEASE_INITIAL.')
-        for destination_host in self.other_host_ids:
-            self._send(MessageTypes.RELEASE_INITIAL, destination_host)
+        with self._other_host_ids_lock:
+            for destination_host in self.other_host_ids:
+                self._send(MessageTypes.RELEASE_INITIAL, destination_host)
         # END
         with self._synchronization_phase_lock:
             self._synchronization_phase = False
@@ -194,7 +207,6 @@ class DistributedMonitor:
 
     def _send(self, message_type: MessageTypes, id_receiver: int):
         with self._lamport_lock:
-            # self._lamport_clock += 1  # CHANGED ORDER
             current_clock = self._lamport_clock
         serialized_message = serialize_lamport(message_type, current_clock, self.host_id, id_receiver)
         self.publisher_socket.send(serialized_message)
@@ -272,12 +284,11 @@ class DistributedMonitor:
             if sender_id in self._hosts_replies:
                 self._hosts_replies[sender_id] = True
                 if all(self._hosts_replies.values()):
-                    # FIXME NIE WIDZI ZE SIEBIE WBIL DO SEKCJI??
                     if self.host_id == self._critical_section_queue.queue[0][1]:
                         with self._in_critical_section_lock:
                             self._in_critical_section = True
                             logging.debug(f'Host[{self.host_id}] entered the critical section.')
-                            self._in_critical_section_lock.notifyAll() # TODO: JAKIE TU MA BYC I CZY W KONTEKSCIE CZY NIE
+                            self._in_critical_section_lock.notifyAll()
                     for host_id in self._hosts_replies:
                         self._hosts_replies[host_id] = False
 
@@ -292,56 +303,59 @@ class DistributedMonitor:
                 with self._in_critical_section_lock:
                     self._in_critical_section = True
                     logging.debug(f'Host[{self.host_id}] entered the critical section.')
-                    self._in_critical_section_lock.notifyAll()  # FIXME: !!!!!1 JAKIE TU MA BYC I CZY W KONTEKSCIE CZY NIE
+                    self._in_critical_section_lock.notifyAll()
             if int(used_sender_id) != int(sender_id):
                 # This should never happen.
                 print(f'{type(used_sender_id)} | {type(sender_id)}')
                 logging.critical(f'Handle release msg id error. {used_sender_id} != {sender_id}')
 
     def _handle_end_communication(self, sender_id: int):
-        pass
-        # # CAN HAPPEN WHENEVER
-        # # IF ONE OF TWO ENDS, THE OTHER ENDS TOO
-        # logging.info(f'Host[{self.host_id}] handling (END-COMMUNICATION) from host[{sender_id}].')
-        #
-        # # ZABLOKUJ TA INSTANCJE
-        #
-        # # TODO: JAKIS ZAMEK NA TO!!!!!!
-        # sender_ip = self._all_hosts[sender_id]["ip"]
-        # sender_port = self._all_hosts[sender_id]["port"]
-        #
-        # self.other_host_ids.remove(sender_id)
-        # self._all_hosts.pop(sender_id)
-        # number_of_other_hosts = len(self.other_host_ids)
-        #
-        # if number_of_other_hosts == 0:
-        #     logging.info(f'Host[{self.host_id}] is exiting due to all other hosts having exited.')
-        #     # TODO: DAJ JAKAS FLAGE ZEBY ZABLOKWOAC BEGIN I END SYNCH I ZE JUZ KONIEC Z NIMI
-        #     # TODO: ALSO CLOSE!
-        #     # KONIEC
-        #
-        # # TODO: zbierz wszystkie elementy w sekcji i reinicjalizuj?
-        # cs_items = []
-        # while not self._critical_section_queue.empty():
-        #     cs_item = self._critical_section_queue.get()
-        #     (used_sender_clock, used_sender_id) = cs_item
-        #     if used_sender_id == sender_id:
-        #         pass
-        #         # TODO: JAKIS SYGNAL ZE SEKCJA ZWOLNIONA jesli byl pierwszy!!
-        #     else:
-        #         cs_items.append(cs_item)
-        #     # TODO JAKIS LOCK
-        #     self._critical_section_queue = PriorityQueue(number_of_other_hosts + 1)
-        # for cs_item in cs_items:
-        #     self._critical_section_queue.put(cs_item)
-        #
-        # with self._hosts_acks_lock:
-        #     self._hosts_acks.pop(sender_id)
-        # with self._hosts_replies_lock:
-        #     self._hosts_replies.pop(sender_id)
-        # with self._sleep_map_lock:
-        #     self._sleep_map.pop(sender_id, '')
-        # self.subscriber_socket.disconnect(f'tcp://{sender_ip}:{sender_port}')
+        # CAN HAPPEN WHENEVER
+        logging.info(f'Host[{self.host_id}] handling (END-COMMUNICATION) from host[{sender_id}].')
+
+        sender_ip = self._all_hosts[sender_id]["ip"]
+        sender_port = self._all_hosts[sender_id]["port"]
+        self._all_hosts.pop(sender_id)
+
+        with self._other_host_ids_lock:
+            self.other_host_ids.remove(sender_id)
+            number_of_other_hosts = len(self.other_host_ids)
+
+        # IF ONE OF TWO ENDS, THE OTHER ENDS TOO
+        if number_of_other_hosts == 0:
+            logging.info(f'Host[{self.host_id}] is exiting due to all other hosts having exited.')
+            self.stop_monitor()
+            # KONIEC CZY TO ZADZIALA??
+
+        cs_items = []
+        sender_had_cs = False
+        i = 0
+        while not self._critical_section_queue.empty():
+            cs_item = self._critical_section_queue.get()
+            (used_sender_clock, used_sender_id) = cs_item
+            if i == 0 and used_sender_id == sender_id:
+                # IF HAD SECTION HANDLE RELEASE ON THEIR BEHALF
+                sender_had_cs = True
+            else:
+                cs_items.append(cs_item)
+            i += 1
+            # TODO JAKIS LOCK
+            self._critical_section_queue = PriorityQueue(number_of_other_hosts + 1)
+        for cs_item in cs_items:
+            self._critical_section_queue.put(cs_item)
+
+        with self._hosts_acks_lock:
+            self._hosts_acks.pop(sender_id)
+        with self._hosts_replies_lock:
+            self._hosts_replies.pop(sender_id)
+        with self._sleep_set_lock:
+            self._sleep_set.discard(sender_id)
+
+        # CZY MOZE NAJPIERW TO OBSLUZYC A POTEM RELEASE? BO WTEDYB BUG
+        if sender_had_cs:
+            self._handle_release_msg(sender_id)
+
+        self.subscriber_socket.disconnect(f'tcp://{sender_ip}:{sender_port}')
 
     def _request(self):
         logging.debug(f'Host[{self.host_id}] requesting the critical section.')
@@ -372,16 +386,20 @@ class DistributedMonitor:
         with self._sleep_set_lock:
             self._sleep_set.add(sender_id)
 
-    def _handle_wake_msg(self, receiver_id: int):  # TUTAJ KOLEJNOSC JAKA WYSCIG Z RELEASE
+    def _handle_wake_msg(self, receiver_id: int):
         with self._sleep_set_lock:
             self._sleep_set.remove(receiver_id)
         if receiver_id == self.host_id:
             with self._asleep_lock:
                 self._asleep = False
-                self._asleep_lock.notifyAll()  # CZY ZWYKLY NOTIFY
+                self._asleep_lock.notifyAll()
 
-# CZY MA ZWRACAC STATUS TA FUNKCJA
     def begin_synchronized(self):
+        # TODO: begin and end could return exit statuses.
+        with self._instance_dead_lock:
+            if not self._instance_dead:
+                logging.info(f'Host[{self.host_id}] is dead, cannot synchronize.')  # FIXME CZY HOST ID JESZCZE ISTNIEJE!!!
+                return
         logging.debug(f'Host[{self.host_id}] is trying to enter the critical-section.')
         synchronization_phase = True
         while synchronization_phase:
@@ -402,6 +420,11 @@ class DistributedMonitor:
                 logging.info(f'Host[{self.host_id}] has to wait, inter host synchronization in progress.')
 
     def end_synchronized(self):
+        with self._instance_dead_lock:
+            if not self._instance_dead:
+                logging.info(
+                    f'Host[{self.host_id}] is dead, cannot end synchronization.')  # FIXME CZY HOST ID JESZCZE ISTNIEJE!!!
+                return
         with self._in_critical_section_lock:
             if self._in_critical_section:
                 self._in_critical_section = False
@@ -416,14 +439,20 @@ class DistributedMonitor:
         with self._sleep_set_lock:
             if len(self._sleep_set) != 0:
                 # DONT SEND WAKE UP SIGNAL TO YOURSELF
-                host_id_to_wakeup = random.choice(list(self._sleep_set.intersection(set(self.other_host_ids))))
-                self._sleep_set.remove(host_id_to_wakeup)
-                self._send(MessageTypes.WAKE, host_id_to_wakeup)  # TODO: CZY TO MA BYC W LOCKU!!!??
+                with self._other_host_ids_lock:
+                    host_id_to_wakeup = random.choice(list(self._sleep_set.intersection(set(self.other_host_ids))))
+                    self._sleep_set.remove(host_id_to_wakeup)
+                    self._send(MessageTypes.WAKE, host_id_to_wakeup)
                 logging.debug(f'Host[{self.host_id}] sent a wake-up signal to host[{host_id_to_wakeup}].')
             else:
                 logging.debug(f'Host[{self.host_id}]\'s sleep queue is empty. No signaling has been done.')
 
     def signal(self):
+        with self._instance_dead_lock:
+            if not self._instance_dead:
+                logging.info(
+                    f'Host[{self.host_id}] is dead, cannot signal.')
+                return
         with self._in_critical_section_lock:
             if self._in_critical_section:
                 with self._should_signal_lock:
@@ -431,18 +460,28 @@ class DistributedMonitor:
             else:
                 logging.debug(f'Host[{self.host_id}] not in critical section. No signaling has been done.')
 
-    def signal_all(self):  # FIXME TUTAJ BY SIE DZIALA BITKA O SEKCJE!!
+    def signal_all(self):
+        with self._instance_dead_lock:
+            if not self._instance_dead:
+                logging.info(
+                    f'Host[{self.host_id}] is dead, cannot signal_all.')
+                return
         with self._in_critical_section_lock:
             if self._in_critical_section:
                 with self._should_signal_lock:
                     # TODO LOCK NA LICZBE HOSTOW??
                     with self._sleep_set_lock:
-                        self._should_signal = len(self._sleep_set.intersection(set(self.other_host_ids))) #len(self.other_host_ids)
-                    # NA WSZYSTKICH SPIACYCH
+                        with self._other_host_ids_lock:
+                            self._should_signal = len(self._sleep_set.intersection(set(self.other_host_ids)))
             else:
                 logging.debug(f'Host[{self.host_id}] not in critical section. No signaling has been done.')
 
     def block(self):
+        with self._instance_dead_lock:
+            if not self._instance_dead:
+                logging.info(
+                    f'Host[{self.host_id}] is dead, cannot block.')
+                return
         should_sleep = False
         with self._in_critical_section_lock:
             if self._in_critical_section:
@@ -467,7 +506,7 @@ class DistributedMonitor:
             # BLOCK UNTIL RELEASE
             with self._release_cond_lock:
                 while self._release_cond:
-                    self._release_cond_lock.wait()  # NIE ZLAPANY RELEASE?
+                    self._release_cond_lock.wait()
             # BLOCK UNTIL SIGNAL
             with self._asleep_lock:
                 while self._asleep:
@@ -479,13 +518,23 @@ class DistributedMonitor:
         logging.debug(f'Host[{self.host_id}] BLOCKING -> RUNNING.')
 
     def stop_monitor(self):
+        with self._instance_dead_lock:
+            if not self._instance_dead:
+                logging.info(
+                    f'Host[{self.host_id}] is already dead.')  # FIXME CZY HOST ID JESZCZE ISTNIEJE!!!
+                return
+        logging.info(f'Host[{self.host_id}] sent END_COMMUNICATION. Remove instance afterwards.')
+        with self._instance_dead_lock:
+            self._instance_dead = True
         self._send(MessageTypes.END_COMMUNICATION, DistributedMonitor.BROADCAST_MESSAGE)
+        # STOP THE LISTENING THREAD
+        # IT IS A DEAMON THREAD ANYWAY SO SHOULD STOP WITH THE MAIN THREAD
         with self._subscriber_loop_lock:
             self._subscriber_loop = False
 
     def __del__(self):
-        pass
-        # self.stop_monitor()  # TODO: UNCOMMENT AND FIX
+        # Send END_COMMUNICATION when the Garbage Collector dumps the instance.
+        self.stop_monitor()
 
     # def __repr__(self):
     #     pass
