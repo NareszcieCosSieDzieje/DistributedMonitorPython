@@ -325,7 +325,8 @@ class DistributedMonitor:
         if number_of_other_hosts == 0:
             logging.info(f'Host[{self.host_id}] is exiting due to all other hosts having exited.')
             self.stop_monitor()
-            # KONIEC CZY TO ZADZIALA??
+            self._in_critical_section_lock.notifyAll()
+            return
 
         cs_items = []
         sender_had_cs = False
@@ -515,8 +516,8 @@ class DistributedMonitor:
                     self._asleep_lock.wait()
             self._request()
             with self._in_critical_section_lock:
-                while not self._in_critical_section:
-                    self._in_critical_section_lock.wait()
+                while not self._in_critical_section and not self._instance_dead:
+                    self._in_critical_section_lock.wait()  # TUTAJ SIE ZBLOKUJE JAK UMRĄ
         logging.debug(f'Host[{self.host_id}] BLOCKING -> RUNNING.')
 
     def stop_monitor(self):
