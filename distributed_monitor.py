@@ -355,6 +355,8 @@ class DistributedMonitor:
         if sender_had_cs:
             self._handle_release_msg(sender_id)
 
+        self._send(MessageTypes.END_COMMUNICATION, sender_id)
+
         self.subscriber_socket.disconnect(f'tcp://{sender_ip}:{sender_port}')
 
     def _request(self):
