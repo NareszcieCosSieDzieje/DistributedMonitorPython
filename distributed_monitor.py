@@ -325,7 +325,8 @@ class DistributedMonitor:
         if number_of_other_hosts == 0:
             logging.info(f'Host[{self.host_id}] is exiting due to all other hosts having exited.')
             self.stop_monitor()
-            self._in_critical_section_lock.notifyAll()
+            with self._in_critical_section_lock:
+                self._in_critical_section_lock.notifyAll()
             return
 
         cs_items = []
