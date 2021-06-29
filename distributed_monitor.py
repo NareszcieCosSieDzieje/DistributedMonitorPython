@@ -397,7 +397,7 @@ class DistributedMonitor:
     def begin_synchronized(self):
         # TODO: begin and end could return exit statuses.
         with self._instance_dead_lock:
-            if not self._instance_dead:
+            if self._instance_dead:
                 logging.info(f'Host[{self.host_id}] is dead, cannot synchronize.')  # FIXME CZY HOST ID JESZCZE ISTNIEJE!!!
                 return
         logging.debug(f'Host[{self.host_id}] is trying to enter the critical-section.')
@@ -421,7 +421,7 @@ class DistributedMonitor:
 
     def end_synchronized(self):
         with self._instance_dead_lock:
-            if not self._instance_dead:
+            if self._instance_dead:
                 logging.info(
                     f'Host[{self.host_id}] is dead, cannot end synchronization.')  # FIXME CZY HOST ID JESZCZE ISTNIEJE!!!
                 return
@@ -449,7 +449,7 @@ class DistributedMonitor:
 
     def signal(self):
         with self._instance_dead_lock:
-            if not self._instance_dead:
+            if self._instance_dead:
                 logging.info(
                     f'Host[{self.host_id}] is dead, cannot signal.')
                 return
@@ -462,7 +462,7 @@ class DistributedMonitor:
 
     def signal_all(self):
         with self._instance_dead_lock:
-            if not self._instance_dead:
+            if self._instance_dead:
                 logging.info(
                     f'Host[{self.host_id}] is dead, cannot signal_all.')
                 return
@@ -478,7 +478,7 @@ class DistributedMonitor:
 
     def block(self):
         with self._instance_dead_lock:
-            if not self._instance_dead:
+            if self._instance_dead:
                 logging.info(
                     f'Host[{self.host_id}] is dead, cannot block.')
                 return
@@ -519,7 +519,7 @@ class DistributedMonitor:
 
     def stop_monitor(self):
         with self._instance_dead_lock:
-            if not self._instance_dead:
+            if self._instance_dead:
                 logging.info(
                     f'Host[{self.host_id}] is already dead.')  # FIXME CZY HOST ID JESZCZE ISTNIEJE!!!
                 return
